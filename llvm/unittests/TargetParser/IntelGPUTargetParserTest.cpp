@@ -7,6 +7,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/TargetParser/IntelGPUTargetParser.h"
+#include "gmock/gmock.h"
 #include "gtest/gtest.h"
 #include <cassert>
 
@@ -208,17 +209,18 @@ std::string expectedIGCASpelling(uint16_t Target,
 }
 
 TEST(IntelGPUTargetParserTest, IGCASpellingsMatchFields) {
-  // Every INTEL_IGCA_TARGET's NAME must agree with information in the rest of
-  // its row.
-#define INTEL_IGCA_TARGET(NAME, TARGET, FEATURE_SET)                           \
-  EXPECT_EQ(NAME, expectedIGCASpelling(                                        \
-                      TARGET, IntelGPU::IGCAFeatureSet::FEATURE_SET));
-#include "llvm/TargetParser/IntelGPUTargetParser.def"
+  // Every derived IGCA target's name must agree with its target level and
+  // feature set.
+  SmallVector<StringRef> Names;
+  IntelGPU::fillValidIGCATargetList(Names);
+  for (StringRef Name : Names) {
+    IntelGPU::IGCATarget T = IntelGPU::parseIGCATarget(Name);
+    EXPECT_EQ(Name, expectedIGCASpelling(T.getTarget(), T.getFeatureSet()));
+  }
 }
 
 TEST(IntelGPUTargetParserTest, EveryDeviceHasValidIGCATarget) {
-  // Every device's IGCA target and feature sets should have a corresponding
-  // entry in INTEL_IGCA_TARGET:
+  // Every device's IGCA target and feature sets should be a valid IGCA target:
 #define INTEL_IGCA_TARGET_CHECK(NAME, IGCA_TARGET, IGCA_FEATURE_SETS)          \
   EXPECT_NE(IntelGPU::getIGCATargetName(IntelGPU::IGCATarget(                  \
                 IGCA_TARGET, IntelGPU::IGCAFeatureSet::IGCA_FEATURE_SETS)),    \

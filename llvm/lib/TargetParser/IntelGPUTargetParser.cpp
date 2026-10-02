@@ -11,7 +11,9 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/TargetParser/IntelGPUTargetParser.h"
-#include "llvm/ADT/StringSwitch.h"
+#include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/Twine.h"
 #include <cassert>
 
@@ -65,23 +67,85 @@ std::string llvm::IntelGPU::getNumericArchName(uint32_t GPUIPVersion) {
       .str();
 }
 
-IGCATarget llvm::IntelGPU::parseIGCATarget(StringRef MaybeTarget) {
-  return StringSwitch<IGCATarget>(MaybeTarget)
-#define INTEL_IGCA_TARGET(NAME, TARGET, FEATURE_SET)                           \
-  .Case(NAME, IGCATarget(TARGET, IGCAFeatureSet::FEATURE_SET))
+namespace {
+struct IGCATargetEntry {
+  StringLiteral Name;
+  IGCATarget Target;
+};
+} // namespace
+
+/// Obtain a list of valid IGCA targets.
+///
+/// We derive a valid list of IGCA targets from INTEL_GPU and INTEL_GPU_COMPAT
+/// defined in IntelGPUTargetParser.def.
+static ArrayRef<IGCATargetEntry> getValidIGCATargets() {
+// "Derivation rules" for inferring core/non-exact rules:
+#define IGCA_IMPLIED_Core(X, T) X(T, Core)
+#define IGCA_IMPLIED_Compute(X, T) X(T, Core) X(T, Compute)
+#define IGCA_IMPLIED_ComputeExact(X, T)                                        \
+  X(T, Core) X(T, Compute) X(T, ComputeExact)
+#define IGCA_IMPLIED_Render(X, T) X(T, Core) X(T, Render)
+#define IGCA_IMPLIED_RenderExact(X, T) X(T, Core) X(T, Render) X(T, RenderExact)
+
+#define IGCA_SUFFIX_Core ""
+#define IGCA_SUFFIX_Compute "c"
+#define IGCA_SUFFIX_ComputeExact "ca"
+#define IGCA_SUFFIX_Render "r"
+#define IGCA_SUFFIX_RenderExact "ra"
+
+  static constexpr IGCATargetEntry ImpliedTargets[] = {
+#define IGCA_ENTRY(T, FS)                                                      \
+  {"igca_" #T IGCA_SUFFIX_##FS, IGCATarget(T, IGCAFeatureSet::FS)},
+#define INTEL_GPU(NAME, KIND, MAJOR, MINOR, IGCA_TARGET, IGCA_FEATURE_SETS)    \
+  IGCA_IMPLIED_##IGCA_FEATURE_SETS(IGCA_ENTRY, IGCA_TARGET)
+#define INTEL_GPU_COMPAT(NAME, KIND, IGCA_TARGET, IGCA_FEATURE_SETS)           \
+  IGCA_IMPLIED_##IGCA_FEATURE_SETS(IGCA_ENTRY, IGCA_TARGET)
 #include "llvm/TargetParser/IntelGPUTargetParser.def"
-      .Default(IGCATarget::invalid());
+#undef IGCA_ENTRY
+  };
+
+#undef IGCA_IMPLIED_Core
+#undef IGCA_IMPLIED_Compute
+#undef IGCA_IMPLIED_ComputeExact
+#undef IGCA_IMPLIED_Render
+#undef IGCA_IMPLIED_RenderExact
+
+#undef IGCA_SUFFIX_Core
+#undef IGCA_SUFFIX_Compute
+#undef IGCA_SUFFIX_ComputeExact
+#undef IGCA_SUFFIX_Render
+#undef IGCA_SUFFIX_RenderExact
+
+  // Remove all duplicate entries produced above.
+  static const SmallVector<IGCATargetEntry, 0> Targets = [] {
+    llvm::ArrayRef<const IGCATargetEntry> IT = ImpliedTargets;
+    SmallVector<IGCATargetEntry, 0> V(IT.begin(), IT.end());
+    llvm::sort(V, [](const IGCATargetEntry &A, const IGCATargetEntry &B) {
+      return A.Target.pack() < B.Target.pack();
+    });
+
+    auto isTargetEq = [](const IGCATargetEntry &A, const IGCATargetEntry &B) {
+      return A.Target == B.Target;
+    };
+    V.erase(llvm::unique(V, isTargetEq), V.end());
+
+    return V;
+  }();
+  return Targets;
+}
+
+IGCATarget llvm::IntelGPU::parseIGCATarget(StringRef MaybeTarget) {
+  for (const IGCATargetEntry &E : getValidIGCATargets())
+    if (E.Name == MaybeTarget)
+      return E.Target;
+  return IGCATarget::invalid();
 }
 
 StringRef llvm::IntelGPU::getIGCATargetName(IGCATarget T) {
-  switch (T.pack()) {
-#define INTEL_IGCA_TARGET(NAME, TARGET, FEATURE_SET)                           \
-  case IGCATarget(TARGET, IGCAFeatureSet::FEATURE_SET).pack():                 \
-    return NAME;
-#include "llvm/TargetParser/IntelGPUTargetParser.def"
-  default:
-    return "";
-  }
+  for (const IGCATargetEntry &E : getValidIGCATargets())
+    if (E.Target == T)
+      return E.Name;
+  return "";
 }
 
 // TODO: Ensure -fsycl --offload-arch provides a list of valid IGCA
@@ -90,6 +154,6 @@ StringRef llvm::IntelGPU::getIGCATargetName(IGCATarget T) {
 // without being told what IGCA targets actually exist might get confusing.
 void llvm::IntelGPU::fillValidIGCATargetList(
     SmallVectorImpl<StringRef> &Values) {
-#define INTEL_IGCA_TARGET(NAME, TARGET, FEATURE_SET) Values.push_back(NAME);
-#include "llvm/TargetParser/IntelGPUTargetParser.def"
+  for (const IGCATargetEntry &E : getValidIGCATargets())
+    Values.push_back(E.Name);
 }
