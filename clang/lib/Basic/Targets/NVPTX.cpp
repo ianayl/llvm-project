@@ -38,7 +38,7 @@ const char *const NVPTXTargetInfo::GCCRegNames[] = {"r0"};
 NVPTXTargetInfo::NVPTXTargetInfo(const llvm::Triple &Triple,
                                  const TargetOptions &Opts,
                                  unsigned TargetPointerWidth)
-    : TargetInfo(Triple) {
+    : OffloadTargetInfo(Triple) {
   assert((TargetPointerWidth == 32 || TargetPointerWidth == 64) &&
          "NVPTX only supports 32- and 64-bit modes.");
 
@@ -64,7 +64,6 @@ NVPTXTargetInfo::NVPTXTargetInfo(const llvm::Triple &Triple,
   // Define available target features
   // These must be defined in sorted order!
   NoAsmVariants = true;
-  GPU = OffloadArch::getUnused();
 
   // Architectures are in the feature map only to gate builtins; the backend
   // takes the architecture from `target-cpu`.
@@ -188,20 +187,20 @@ void NVPTXTargetInfo::getTargetDefines(const LangOptions &Opts,
   Builder.defineMacro("__NVPTX__");
 
   // Skip setting architecture dependent macros if undefined.
-  if (!GPU.isNVPTX())
+  if (!DeviceArch.isNVPTX())
     return;
 
   if (Opts.CUDAIsDevice || Opts.OpenMPIsTargetDevice || !HostTarget) {
     // Set __CUDA_ARCH__ for the GPU specified.
-    unsigned ArchID = CudaArchToID(GPU);
+    unsigned ArchID = CudaArchToID(DeviceArch);
     Builder.defineMacro("__CUDA_ARCH__", llvm::Twine(ArchID));
 
-    if (IsNVIDIAAcceleratedOffloadArch(GPU)) {
+    if (IsNVIDIAAcceleratedOffloadArch(DeviceArch)) {
       Builder.defineMacro("__CUDA_ARCH_SPECIFIC__", llvm::Twine(ArchID));
       Builder.defineMacro(
           "__CUDA_ARCH_FEAT_SM" + llvm::Twine(ArchID / 10) + "_ALL", "1");
     }
-    if (IsNVIDIAFamilySpecificOffloadArch(GPU))
+    if (IsNVIDIAFamilySpecificOffloadArch(DeviceArch))
       Builder.defineMacro("__CUDA_ARCH_FAMILY_SPECIFIC__", llvm::Twine(ArchID));
   }
 }

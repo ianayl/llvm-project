@@ -19,6 +19,7 @@
 #include "llvm/Support/Compiler.h"
 #include "llvm/Support/NVPTXAddrSpace.h"
 #include "llvm/TargetParser/Triple.h"
+#include "OffloadTarget.h"
 #include <optional>
 
 namespace clang {
@@ -54,9 +55,8 @@ static const int NVPTXDWARFAddrSpaceMap[] = {
     4,  // opencl_constant or cuda_constant
 };
 
-class LLVM_LIBRARY_VISIBILITY NVPTXTargetInfo : public TargetInfo {
+class LLVM_LIBRARY_VISIBILITY NVPTXTargetInfo : public OffloadTargetInfo {
   static const char *const GCCRegNames[];
-  OffloadArch GPU;
   uint32_t PTXVersion;
   std::unique_ptr<TargetInfo> HostTarget;
 
@@ -75,8 +75,8 @@ public:
   initFeatureMap(llvm::StringMap<bool> &Features, DiagnosticsEngine &Diags,
                  StringRef CPU,
                  const std::vector<std::string> &FeaturesVec) const override {
-    if (!GPU.isUnused())
-      Features[OffloadArchToString(GPU)] = true;
+    if (!DeviceArch.isUnused())
+      Features[OffloadArchToString(DeviceArch)] = true;
     // Only add PTX feature if explicitly requested. Otherwise, let the backend
     // use the minimum required PTX version for the target SM.
     if (PTXVersion != 0)
@@ -135,21 +135,16 @@ public:
     return TargetInfo::CharPtrBuiltinVaList;
   }
 
-  // StringToOffloadArch also recognizes other vendors' GPUs, so accept only an
-  // NVPTX one.
-  bool isValidCPUName(StringRef Name) const override {
-    return StringToOffloadArch(Name).isNVPTX();
-  }
-
   void fillValidCPUList(SmallVectorImpl<StringRef> &Values) const override {
 #define NVPTX_GPU(NAME, KIND, VIRTUAL, SM_ID, MIN_VER, MAX_VER, SUFFIX)        \
   Values.push_back(NAME);
 #include "llvm/TargetParser/NVPTXTargetParser.def"
   }
 
-  bool setCPU(StringRef Name) override {
-    GPU = StringToOffloadArch(Name);
-    return GPU.isNVPTX();
+  // StringToOffloadArch also recognizes other vendors' GPUs, so accept only an
+  // NVPTX one.
+  bool isSupportedOffloadArch(OffloadArch Arch) const override {
+    return Arch.isNVPTX();
   }
   void adjust(DiagnosticsEngine &Diags, LangOptions &Opts,
               const TargetInfo *Aux) override;
@@ -208,8 +203,6 @@ public:
 
   bool hasBitIntType() const override { return true; }
   bool hasBFloat16Type() const override { return true; }
-
-  OffloadArch getGPU() const { return GPU; }
 };
 } // namespace targets
 } // namespace clang
