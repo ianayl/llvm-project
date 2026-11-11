@@ -194,12 +194,18 @@ void AMDGPUTargetInfo::fillValidCPUList(
 
 AMDGPUTargetInfo::AMDGPUTargetInfo(const llvm::Triple &Triple,
                                    const TargetOptions &Opts)
-    : TargetInfo(Triple),
-      GPUKind(Triple.isAMDGCN()
-                  ? (Opts.CPU.empty() ? llvm::AMDGPU::getGPUKindFromSubArch(
-                                            Triple.getSubArch())
-                                      : llvm::AMDGPU::parseArchAMDGCN(Opts.CPU))
-                  : llvm::AMDGPU::parseArchR600(Opts.CPU)) {
+    : OffloadTargetInfo(Triple) {
+  if (isR600(Triple)) {
+    R600Kind = llvm::AMDGPU::parseArchR600(Opts.CPU);
+  } else {
+    llvm::AMDGPU::GPUKind Kind =
+        Opts.CPU.empty()
+            ? llvm::AMDGPU::getGPUKindFromSubArch(Triple.getSubArch())
+            : llvm::AMDGPU::parseArchAMDGCN(Opts.CPU);
+    // Leave DeviceArch unset for the dummy target (no CPU, no subarch).
+    if (Kind != llvm::AMDGPU::GK_NONE)
+      DeviceArch = OffloadArch::getAMDGPU(Kind);
+  }
   resetDataLayout();
 
   AddrSpaceMap = &AMDGPUAddrSpaceMap;
@@ -216,8 +222,8 @@ AMDGPUTargetInfo::AMDGPUTargetInfo(const llvm::Triple &Triple,
   // should just be assumed true for the dummy target.
   HasFastHalfType = true;
   HasFloat16 = true;
-  WavefrontSize = llvm::AMDGPU::getFeatureBitset(GPUKind).test(
-                      llvm::AMDGPU::FEAT_SUPPORTS_WAVE32)
+  WavefrontSize = llvm::AMDGPU::getFeatureBitset(getGPUKind())
+                          .test(llvm::AMDGPU::FEAT_SUPPORTS_WAVE32)
                       ? 32
                       : 64;
 
@@ -233,13 +239,13 @@ AMDGPUTargetInfo::AMDGPUTargetInfo(const llvm::Triple &Triple,
   }
 
   MaxAtomicPromoteWidth = MaxAtomicInlineWidth = 64;
-  CUMode = !llvm::AMDGPU::getFeatureBitset(GPUKind).test(
-      llvm::AMDGPU::FEAT_SUPPORTS_WGP);
+  CUMode = !llvm::AMDGPU::getFeatureBitset(getGPUKind())
+                .test(llvm::AMDGPU::FEAT_SUPPORTS_WGP);
 
   for (auto F : {"image-insts", "gws", "vmem-to-lds-load-insts", "supports-wgp",
                  "supports-wave32", "xnack-support", "sramecc-support",
                  "xnack-on-off-modes", "sramecc-on-off-modes"}) {
-    if (GPUKind != llvm::AMDGPU::GK_NONE)
+    if (getGPUKind() != llvm::AMDGPU::GK_NONE)
       ReadOnlyFeatures.insert(F);
   }
   HalfArgsAndReturns = true;
@@ -295,6 +301,7 @@ void AMDGPUTargetInfo::getTargetDefines(const LangOptions &Opts,
 
   // Legacy HIP host code relies on these default attributes to be defined.
   bool IsHIPHost = Opts.HIP && !Opts.CUDAIsDevice;
+  const llvm::AMDGPU::GPUKind GPUKind = getGPUKind();
   if (GPUKind == llvm::AMDGPU::GK_NONE && !IsHIPHost)
     return;
 

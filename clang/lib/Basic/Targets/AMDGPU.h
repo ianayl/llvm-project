@@ -13,6 +13,7 @@
 #ifndef LLVM_CLANG_LIB_BASIC_TARGETS_AMDGPU_H
 #define LLVM_CLANG_LIB_BASIC_TARGETS_AMDGPU_H
 
+#include "OffloadTarget.h"
 #include "clang/Basic/TargetID.h"
 #include "clang/Basic/TargetInfo.h"
 #include "clang/Basic/TargetOptions.h"
@@ -26,13 +27,16 @@
 namespace clang {
 namespace targets {
 
-class LLVM_LIBRARY_VISIBILITY AMDGPUTargetInfo final : public TargetInfo {
+class LLVM_LIBRARY_VISIBILITY AMDGPUTargetInfo final
+    : public OffloadTargetInfo {
 
   static const char *const GCCRegNames[];
 
   static const LangASMap AMDGPUAddrSpaceMap;
 
-  llvm::AMDGPU::GPUKind GPUKind;
+  /// GPUKind for R600: Since R600 doesn't support offload, it's kept separately
+  /// from DeviceArch, whereas AMDGCN GPUs are stored in DeviceArch.
+  llvm::AMDGPU::GPUKind R600Kind = llvm::AMDGPU::GK_NONE;
   unsigned WavefrontSize;
 
   /// Whether to use cumode or WGP mode. True for cumode. False for WGP mode.
@@ -54,8 +58,8 @@ class LLVM_LIBRARY_VISIBILITY AMDGPUTargetInfo final : public TargetInfo {
   /// Has fast fma f32
   bool hasFastFMAF() const {
     return getTriple().isAMDGCN() &&
-           llvm::AMDGPU::getFeatureBitset(GPUKind).test(
-               llvm::AMDGPU::FEAT_FAST_FMAF);
+           llvm::AMDGPU::getFeatureBitset(getGPUKind())
+               .test(llvm::AMDGPU::FEAT_FAST_FMAF);
   }
 
   /// Has fast fma f64
@@ -63,14 +67,14 @@ class LLVM_LIBRARY_VISIBILITY AMDGPUTargetInfo final : public TargetInfo {
 
   bool hasFMAF() const {
     return getTriple().isAMDGCN() ||
-           llvm::AMDGPU::getFeatureBitsetR600(GPUKind).test(
-               llvm::AMDGPU::R600_FEAT_FMAF);
+           llvm::AMDGPU::getFeatureBitsetR600(getGPUKind())
+               .test(llvm::AMDGPU::R600_FEAT_FMAF);
   }
 
   bool hasFullRateDenormalsF32() const {
     return getTriple().isAMDGCN() &&
-           llvm::AMDGPU::getFeatureBitset(GPUKind).test(
-               llvm::AMDGPU::FEAT_FAST_DENORMAL_F32);
+           llvm::AMDGPU::getFeatureBitset(getGPUKind())
+               .test(llvm::AMDGPU::FEAT_FAST_DENORMAL_F32);
   }
 
   bool hasLDEXPF() const { return getTriple().isAMDGCN(); }
@@ -79,12 +83,19 @@ class LLVM_LIBRARY_VISIBILITY AMDGPUTargetInfo final : public TargetInfo {
     return TT.getArch() == llvm::Triple::r600;
   }
 
+  llvm::AMDGPU::GPUKind getGPUKind() const {
+    if (isR600(getTriple()))
+      return R600Kind;
+    return DeviceArch.isAMDGPU() ? DeviceArch.amdgpuKind()
+                                 : llvm::AMDGPU::GK_NONE;
+  }
+
   bool hasFlatSupport() const {
-    if (GPUKind >= llvm::AMDGPU::GK_GFX700)
+    if (getGPUKind() >= llvm::AMDGPU::GK_GFX700)
       return true;
 
     // Dummy target is assumed to be gfx700+ for amdhsa.
-    if (GPUKind == llvm::AMDGPU::GK_NONE &&
+    if (getGPUKind() == llvm::AMDGPU::GK_NONE &&
         getTriple().getOS() == llvm::Triple::AMDHSA)
       return true;
 
@@ -269,25 +280,27 @@ public:
   }
 
   bool isValidCPUName(StringRef Name) const override {
-    if (getTriple().isAMDGCN()) {
-      return llvm::AMDGPU::isCPUValidForSubArch(getTriple().getSubArch(),
-                                                Name) &&
-             !llvm::AMDGPU::isPseudoTarget(Name);
-    }
-    return llvm::AMDGPU::parseArchR600(Name) != llvm::AMDGPU::GK_NONE;
+    if (isR600(getTriple()))
+      return llvm::AMDGPU::parseArchR600(Name) != llvm::AMDGPU::GK_NONE;
+    return OffloadTargetInfo::isValidCPUName(Name);
   }
 
   void fillValidCPUList(SmallVectorImpl<StringRef> &Values) const override;
 
+  bool isSupportedOffloadArch(OffloadArch Arch) const override {
+    if (isR600(getTriple()) || !Arch.isAMDGPU())
+      return false;
+    llvm::AMDGPU::GPUKind Kind = Arch.amdgpuKind();
+    return llvm::AMDGPU::isCPUValidForSubArch(getTriple().getSubArch(), Kind) &&
+           !llvm::AMDGPU::isPseudoTarget(Kind);
+  }
+
   bool setCPU(StringRef Name) override {
-    if (getTriple().isAMDGCN()) {
-      GPUKind = llvm::AMDGPU::parseArchAMDGCN(Name);
-      return llvm::AMDGPU::isCPUValidForSubArch(getTriple().getSubArch(),
-                                                GPUKind) &&
-             !llvm::AMDGPU::isPseudoTarget(GPUKind);
+    if (isR600(getTriple())) {
+      R600Kind = llvm::AMDGPU::parseArchR600(Name);
+      return R600Kind != llvm::AMDGPU::GK_NONE;
     }
-    GPUKind = llvm::AMDGPU::parseArchR600(Name);
-    return GPUKind != llvm::AMDGPU::GK_NONE;
+    return OffloadTargetInfo::setCPU(Name);
   }
 
   void setSupportedOpenCLOpts() override {
@@ -304,7 +317,7 @@ public:
     Opts["cl_khr_fp64"] = hasFP64();
     Opts["__opencl_c_fp64"] = hasFP64();
 
-    if (IsAMDGCN || GPUKind >= llvm::AMDGPU::GK_CEDAR) {
+    if (IsAMDGCN || getGPUKind() >= llvm::AMDGPU::GK_CEDAR) {
       Opts["cl_khr_byte_addressable_store"] = true;
       Opts["cl_khr_global_int32_base_atomics"] = true;
       Opts["cl_khr_global_int32_extended_atomics"] = true;
@@ -461,8 +474,8 @@ public:
   bool handleTargetFeatures(std::vector<std::string> &Features,
                             DiagnosticsEngine &Diags) override {
     HasFullBFloat16 = true;
-    auto TargetIDFeatures =
-        getAllPossibleTargetIDFeatures(getTriple(), getArchNameAMDGCN(GPUKind));
+    auto TargetIDFeatures = getAllPossibleTargetIDFeatures(
+        getTriple(), getArchNameAMDGCN(getGPUKind()));
     for (const auto &F : Features) {
       assert(F.front() == '+' || F.front() == '-');
       if (F == "+wavefrontsize64")
@@ -487,7 +500,7 @@ public:
     llvm::AMDGPU::GPUKind NameKind = getTriple().isAMDGCN()
                                          ? llvm::AMDGPU::parseArchAMDGCN(Name)
                                          : llvm::AMDGPU::parseArchR600(Name);
-    return NameKind == GPUKind;
+    return NameKind == getGPUKind();
   }
 
   bool hasHIPImageSupport() const override { return HasImage; }
